@@ -26,7 +26,7 @@ _builder.BuildTopDescriptorsAndMessages(_descriptor_pool.Default().AddSerialized
 BioData = _sym_db.GetSymbol('Data')
 EmptyMessage = _sym_db.GetSymbol('EmptyMessage')
 
-app = FastAPI(title="BITTU__DEV Master API", version="6.0")
+app = FastAPI(title="BITTU__DEV Master API", version="7.0")
 
 SECRET_KEY = b'Yg&tc%DEuh6%Zc^8'
 SECRET_IV = b'6oyZDr22E3ychjM%'
@@ -37,6 +37,10 @@ DEVELOPER = "@BITTU__DEV"
 
 JWT_API_BASE = "https://jwt-generator-da4784782bce.herokuapp.com" 
 TOKEN_CACHE = {}
+
+# ==========================================
+# AUTHENTICATION ENGINES
+# ==========================================
 
 async def Get_Cached_JWT(Region: str) -> str:
     Reg = Region.upper()
@@ -53,13 +57,32 @@ async def Get_Cached_JWT(Region: str) -> str:
         New_Jwt = Data.get("token")
         
         if not New_Jwt:
-            raise HTTPException(status_code=500, detail=f"JWT Factory Failed To Provide Token For {Reg} 💀")
+            raise HTTPException(status_code=500, detail=f"JWT Factory Failed To Provide Burner Token For {Reg} 💀")
             
         TOKEN_CACHE[Reg] = {
             "token": New_Jwt,
             "expires": Current_Time + 7000
         }
         return New_Jwt
+
+async def Get_User_JWT(uid: str, password: str, region: str) -> str:
+    async with httpx.AsyncClient(verify=False) as Client:
+        Res = await Client.get(f"{JWT_API_BASE}/api/token?uid={uid}&password={password}&reg={region}", timeout=20.0)
+        
+        if Res.status_code != 200:
+            raise HTTPException(status_code=401, detail="User Auth Failed! Check Target UID and Password. 💀")
+            
+        Data = Res.json()
+        User_Token = Data.get("token")
+        
+        if not User_Token:
+            raise HTTPException(status_code=500, detail="JWT API Failed To Forge User Token. 💀")
+            
+        return User_Token
+
+# ==========================================
+# ROUTING & ENCRYPTION
+# ==========================================
 
 def Get_Server_Url(Region: str, Action: str) -> str:
     Reg = Region.upper()
@@ -90,18 +113,23 @@ def Encrypt_Data(Hex_Data: str) -> str:
     Encrypted = Cipher.encrypt(Padded_Data)
     return binascii.hexlify(Encrypted).decode()
 
+# ==========================================
+# API ENDPOINTS
+# ==========================================
+
 @app.get("/")
 async def Root_Status():
     return JSONResponse(content={
         "System": "BITTU__DEV Master API Online 💀🚀",
         "Modules_Active": ["Info", "Bio", "Nickname", "Stats"],
-        "Architecture": "FastAPI Load Balancer With Smart Cache 👑"
+        "Architecture": "FastAPI Load Balancer With Dual Auth Engine 👑"
     })
 
 @app.get("/api/info")
 async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(None)):
     Reg = region.upper()
     
+    # Burner Cache Auth
     Active_JWT = jwt if jwt else await Get_Cached_JWT(Reg)
     
     Message = uid_generator_pb2.uid_generator()
@@ -128,8 +156,8 @@ async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str =
         err_str = str(e).lower()
         if "401" in err_str or "unauthorized" in err_str:
             TOKEN_CACHE.pop(Reg, None) 
-            raise HTTPException(status_code=401, detail="Token Expired Cache Flushed Try Again ♻️")
-        raise HTTPException(status_code=500, detail=f"Garena Server Error {e}")
+            raise HTTPException(status_code=401, detail="Burner Token Expired. Cache Flushed. Try Again! ♻️")
+        raise HTTPException(status_code=500, detail=f"Garena Server Error: {e}")
         
     Acc_Info = info_data_pb2.AccountPersonalShowInfo()
     Acc_Info.ParseFromString(Res.content)
@@ -144,6 +172,7 @@ async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str =
 async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(None)):
     Reg = region.upper()
     
+    # Burner Cache Auth
     Active_JWT = jwt if jwt else await Get_Cached_JWT(Reg)
     
     Message = PlayerStats_pb2.request()
@@ -160,7 +189,7 @@ async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str 
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     
-    Endpoint = f"{Get_Server_Url(Reg, 'Stats')}/GetPlayerStatsShow"
+    Endpoint = f"{Get_Server_Url(Reg, 'Stats')}/GetPlayerStats"
     
     try:
         async with httpx.AsyncClient(verify=False) as Client:
@@ -170,8 +199,8 @@ async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str 
         err_str = str(e).lower()
         if "401" in err_str or "unauthorized" in err_str:
             TOKEN_CACHE.pop(Reg, None)
-            raise HTTPException(status_code=401, detail="Token Expired Cache Flushed Try Again ♻️")
-        raise HTTPException(status_code=500, detail=f"Garena Server Error {e}")
+            raise HTTPException(status_code=401, detail="Burner Token Expired. Cache Flushed. Try Again! ♻️")
+        raise HTTPException(status_code=500, detail=f"Garena Server Error: {e}")
         
     return JSONResponse(content={
         "Developer": DEVELOPER,
@@ -180,8 +209,20 @@ async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str 
     })
 
 @app.post("/api/bio")
-async def Update_Bio(bio: str = Form(...), region: str = Form("IND"), jwt: str = Form(...)):
+async def Update_Bio(
+    bio: str = Form(...), 
+    region: str = Form("IND"), 
+    jwt: str = Form(None),
+    uid: str = Form(None),
+    password: str = Form(None)
+):
     Reg = region.upper()
+    
+    # Target Hijack Auth
+    if not jwt:
+        if not uid or not password:
+            raise HTTPException(status_code=400, detail="Provide either a valid 'jwt', or target 'uid' & 'password'! 💀")
+        jwt = await Get_User_JWT(uid, password, Reg)
     
     try:
         Data = BioData()
@@ -211,13 +252,28 @@ async def Update_Bio(bio: str = Form(...), region: str = Form("IND"), jwt: str =
             "Developer": DEVELOPER,
             "Status": "Bio Injected Successfully 💎",
             "Injected_Text": bio,
+            "Target_UID": uid if uid else "Manual JWT",
             "Http_Code": Res.status_code
         })
     except Exception as E:
         raise HTTPException(status_code=500, detail=str(E))
 
 @app.post("/api/nickname")
-async def Change_Nickname(new_name: str = Form(...), jwt: str = Form(...)):
+async def Change_Nickname(
+    new_name: str = Form(...), 
+    region: str = Form("IND"),
+    jwt: str = Form(None),
+    uid: str = Form(None),
+    password: str = Form(None)
+):
+    Reg = region.upper()
+    
+    # Target Hijack Auth
+    if not jwt:
+        if not uid or not password:
+            raise HTTPException(status_code=400, detail="Provide either a valid 'jwt', or target 'uid' & 'password'! 💀")
+        jwt = await Get_User_JWT(uid, password, Reg)
+        
     Message = nick_data_pb2.Message()
     Message.data = new_name.encode("utf-8")
     Message.timestamp = int(time.time() * 1000)
@@ -240,5 +296,6 @@ async def Change_Nickname(new_name: str = Form(...), jwt: str = Form(...)):
         "Developer": DEVELOPER,
         "Status": "Nickname Altered 🎭",
         "Target_Name": new_name,
+        "Target_UID": uid if uid else "Manual JWT",
         "Http_Code": Res.status_code
     })
