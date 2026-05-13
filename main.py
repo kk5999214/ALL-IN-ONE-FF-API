@@ -26,7 +26,7 @@ _builder.BuildTopDescriptorsAndMessages(_descriptor_pool.Default().AddSerialized
 BioData = _sym_db.GetSymbol('Data')
 EmptyMessage = _sym_db.GetSymbol('EmptyMessage')
 
-App = FastAPI(title="BITTU__DEV Master API", version="5.0")
+app = FastAPI(title="BITTU__DEV Master API", version="6.0")
 
 SECRET_KEY = b'Yg&tc%DEuh6%Zc^8'
 SECRET_IV = b'6oyZDr22E3ychjM%'
@@ -34,6 +34,32 @@ GAME_VERSION = "OB53"
 UNITY_VERSION = "2018.4.11f1"
 USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 15; I2404 Build/AP3A.240905.015.A2_V000L1)"
 DEVELOPER = "@BITTU__DEV"
+
+JWT_API_BASE = "https://jwt-generator-da4784782bce.herokuapp.com" 
+TOKEN_CACHE = {}
+
+async def Get_Cached_JWT(Region: str) -> str:
+    Reg = Region.upper()
+    Current_Time = time.time()
+    
+    if Reg in TOKEN_CACHE:
+        if Current_Time < TOKEN_CACHE[Reg]["expires"]:
+            return TOKEN_CACHE[Reg]["token"]
+            
+    async with httpx.AsyncClient(verify=False) as Client:
+        Res = await Client.get(f"{JWT_API_BASE}/api/token?reg={Reg}", timeout=20.0)
+        Res.raise_for_status()
+        Data = Res.json()
+        New_Jwt = Data.get("token")
+        
+        if not New_Jwt:
+            raise HTTPException(status_code=500, detail=f"JWT Factory Failed To Provide Token For {Reg} 💀")
+            
+        TOKEN_CACHE[Reg] = {
+            "token": New_Jwt,
+            "expires": Current_Time + 7000
+        }
+        return New_Jwt
 
 def Get_Server_Url(Region: str, Action: str) -> str:
     Reg = Region.upper()
@@ -64,26 +90,28 @@ def Encrypt_Data(Hex_Data: str) -> str:
     Encrypted = Cipher.encrypt(Padded_Data)
     return binascii.hexlify(Encrypted).decode()
 
-@App.get("/")
+@app.get("/")
 async def Root_Status():
     return JSONResponse(content={
         "System": "BITTU__DEV Master API Online 💀🚀",
         "Modules_Active": ["Info", "Bio", "Nickname", "Stats"],
-        "Architecture": "FastAPI Load Balancer 👑"
+        "Architecture": "FastAPI Load Balancer With Smart Cache 👑"
     })
 
-@App.get("/api/info")
-async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(...)):
+@app.get("/api/info")
+async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(None)):
     Reg = region.upper()
+    
+    Active_JWT = jwt if jwt else await Get_Cached_JWT(Reg)
+    
     Message = uid_generator_pb2.uid_generator()
     Message.saturn_ = int(uid)
     Message.garena = 1
-    Hex_Payload = binascii.hexlify(Message.SerializeToString()).decode()
-    Encrypted_Hex = Encrypt_Data(Hex_Payload)
+    Encrypted_Hex = Encrypt_Data(binascii.hexlify(Message.SerializeToString()).decode())
     
     Headers = {
         'User-Agent': USER_AGENT,
-        'Authorization': f'Bearer {jwt}',
+        'Authorization': f'Bearer {Active_JWT}',
         'X-Unity-Version': UNITY_VERSION,
         'X-GA': 'v1 1',
         'ReleaseVersion': GAME_VERSION,
@@ -92,8 +120,16 @@ async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str =
     
     Endpoint = f"{Get_Server_Url(Reg, 'Info')}/GetPlayerPersonalShow"
     
-    async with httpx.AsyncClient(verify=False) as Client:
-        Res = await Client.post(Endpoint, headers=Headers, content=bytes.fromhex(Encrypted_Hex))
+    try:
+        async with httpx.AsyncClient(verify=False) as Client:
+            Res = await Client.post(Endpoint, headers=Headers, content=bytes.fromhex(Encrypted_Hex))
+            Res.raise_for_status() 
+    except Exception as e:
+        err_str = str(e).lower()
+        if "401" in err_str or "unauthorized" in err_str:
+            TOKEN_CACHE.pop(Reg, None) 
+            raise HTTPException(status_code=401, detail="Token Expired Cache Flushed Try Again ♻️")
+        raise HTTPException(status_code=500, detail=f"Garena Server Error {e}")
         
     Acc_Info = info_data_pb2.AccountPersonalShowInfo()
     Acc_Info.ParseFromString(Res.content)
@@ -104,7 +140,46 @@ async def Get_Info(uid: str = Query(...), region: str = Query("IND"), jwt: str =
         "Data": MessageToDict(Acc_Info)
     })
 
-@App.post("/api/bio")
+@app.get("/api/stats")
+async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(None)):
+    Reg = region.upper()
+    
+    Active_JWT = jwt if jwt else await Get_Cached_JWT(Reg)
+    
+    Message = PlayerStats_pb2.request()
+    Message.accountid = int(uid)
+    Message.matchmode = 0
+    Encrypted_Hex = Encrypt_Data(binascii.hexlify(Message.SerializeToString()).decode())
+    
+    Headers = {
+        'User-Agent': USER_AGENT,
+        'Authorization': f'Bearer {Active_JWT}',
+        'X-Unity-Version': UNITY_VERSION,
+        'X-GA': 'v1 1',
+        'ReleaseVersion': GAME_VERSION,
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    
+    Endpoint = f"{Get_Server_Url(Reg, 'Stats')}/GetPlayerStatsShow"
+    
+    try:
+        async with httpx.AsyncClient(verify=False) as Client:
+            Res = await Client.post(Endpoint, headers=Headers, content=bytes.fromhex(Encrypted_Hex))
+            Res.raise_for_status()
+    except Exception as e:
+        err_str = str(e).lower()
+        if "401" in err_str or "unauthorized" in err_str:
+            TOKEN_CACHE.pop(Reg, None)
+            raise HTTPException(status_code=401, detail="Token Expired Cache Flushed Try Again ♻️")
+        raise HTTPException(status_code=500, detail=f"Garena Server Error {e}")
+        
+    return JSONResponse(content={
+        "Developer": DEVELOPER,
+        "Status": "Stats Pulled 📊",
+        "Http_Code": Res.status_code
+    })
+
+@app.post("/api/bio")
 async def Update_Bio(bio: str = Form(...), region: str = Form("IND"), jwt: str = Form(...)):
     Reg = region.upper()
     
@@ -141,7 +216,7 @@ async def Update_Bio(bio: str = Form(...), region: str = Form("IND"), jwt: str =
     except Exception as E:
         raise HTTPException(status_code=500, detail=str(E))
 
-@App.post("/api/nickname")
+@app.post("/api/nickname")
 async def Change_Nickname(new_name: str = Form(...), jwt: str = Form(...)):
     Message = nick_data_pb2.Message()
     Message.data = new_name.encode("utf-8")
@@ -165,33 +240,5 @@ async def Change_Nickname(new_name: str = Form(...), jwt: str = Form(...)):
         "Developer": DEVELOPER,
         "Status": "Nickname Altered 🎭",
         "Target_Name": new_name,
-        "Http_Code": Res.status_code
-    })
-
-@App.get("/api/stats")
-async def Get_Stats(uid: str = Query(...), region: str = Query("IND"), jwt: str = Query(...)):
-    Reg = region.upper()
-    Message = PlayerStats_pb2.request()
-    Message.accountid = int(uid)
-    Message.matchmode = 0
-    Encrypted_Hex = Encrypt_Data(binascii.hexlify(Message.SerializeToString()).decode())
-    
-    Headers = {
-        'User-Agent': USER_AGENT,
-        'Authorization': f'Bearer {jwt}',
-        'X-Unity-Version': UNITY_VERSION,
-        'X-GA': 'v1 1',
-        'ReleaseVersion': GAME_VERSION,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    
-    Endpoint = f"{Get_Server_Url(Reg, 'Stats')}/GetPlayerStatsShow"
-    
-    async with httpx.AsyncClient(verify=False) as Client:
-        Res = await Client.post(Endpoint, headers=Headers, content=bytes.fromhex(Encrypted_Hex))
-        
-    return JSONResponse(content={
-        "Developer": DEVELOPER,
-        "Status": "Stats Pulled 📊",
         "Http_Code": Res.status_code
     })
